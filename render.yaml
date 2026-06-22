@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: mock-retail-mcp
+    runtime: python
+    plan: free               # $0, spins down after 15 min idle (~30-60s cold start). Use "starter" for always-warm.
+    region: ohio             # pick the region closest to your Salesforce instance
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.3"
+      # Uncomment to require a bearer token on every MCP request:
+      # - key: MCP_API_KEY
+      #   sync: false        # set the value in the Render dashboard, not in git

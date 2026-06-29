@@ -14,15 +14,38 @@ Mirrors the pattern of the Where to Buy server.py:
   - Flat Pydantic output models (Lightning-resolvable)
   - BearerAuthMiddleware + /health route
   - uvicorn entry point
+
+Metadata enrichment (this version):
+  - Every INPUT parameter carries an explicit description (Annotated + Field),
+    plus examples, instead of relying on docstring Args parsing.
+  - Every OUTPUT field carries a description (unchanged — already present).
+  - Every tool carries ToolAnnotations "advanced settings":
+        readOnlyHint    = True   (none of these tools mutate state)
+        idempotentHint  = True   (same args -> same result, safe to retry)
+        destructiveHint = False  (nothing is deleted or overwritten)
+        openWorldHint   = False  (static in-memory data, no external systems)
+        title           = friendly per-tool display name
+
+Agentforce Lightning-type safety (MCP Tool Response Schemas guideline):
+  - EVERY tool exposes at least one input and a structured output, so no
+    MCP tool action renders an empty Input or Output panel in Builder.
+  - Inputs use PLAIN primitive types (str / int) with sentinel defaults
+    ("" / 0) instead of Optional[...]. Optional[...] emits an anyOf[type,null]
+    union, which is an "operator" type that does NOT resolve to a Lightning
+    type and would render the input empty. Empty string / 0 mean "no filter".
+  - Outputs are flat, first-level, primitive-only required fields (no nested
+    objects, no arrays of objects, no Optional/union fields) so they resolve
+    cleanly to Lightning types.
 """
 
 import logging
 import os
-from typing import Optional
+from typing import Annotated
 
 from pydantic import BaseModel, Field
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, PlainTextResponse
@@ -50,6 +73,20 @@ mcp = FastMCP(
     stateless_http=True,
     json_response=True,
 )
+
+# ---------------------------------------------------------------------------
+# Advanced settings — shared ToolAnnotations
+# ---------------------------------------------------------------------------
+# All recipe tools are read-only lookups over a static in-memory dataset.
+# title is set per-tool below; these are the behavioral hints shared by all.
+def _read_only(title: str) -> ToolAnnotations:
+    return ToolAnnotations(
+        title=title,
+        readOnlyHint=True,
+        idempotentHint=True,
+        destructiveHint=False,
+        openWorldHint=False,
+    )
 
 # ---------------------------------------------------------------------------
 # Recipe data
@@ -464,29 +501,104 @@ class MealTypesOutput(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Reusable Annotated input parameter types (explicit input descriptions)
+# ---------------------------------------------------------------------------
+RecipeIdParam = Annotated[
+    str,
+    Field(
+        description="The recipe ID to look up. Format is '<brand-prefix>-<nnn>' where the "
+                    "prefix is knc (Kraft Natural Cheese), hau (Heinz AU), or kh (KraftHeinz.com).",
+        examples=["knc-001", "hau-002", "kh-003"],
+    ),
+]
+
+SlugParam = Annotated[
+    str,
+    Field(
+        description="The recipe URL slug to look up (the hyphenated identifier from the recipe's source URL).",
+        examples=["simply-lasagna", "chicken-and-bean-burritos", "fantasy-fudge"],
+    ),
+]
+
+QueryParam = Annotated[
+    str,
+    Field(
+        description="Free-text keyword searched across recipe title, description, tags and ingredients. "
+                    "Case-insensitive substring match. Leave empty to skip keyword filtering.",
+        examples=["cheese", "chicken", "chocolate"],
+    ),
+]
+
+BrandParam = Annotated[
+    str,
+    Field(
+        description="Filter by source brand. Case-insensitive substring match. "
+                    "Valid values: 'Kraft Natural Cheese', 'Heinz AU', 'KraftHeinz.com'. Leave empty to skip.",
+        examples=["Heinz AU", "Kraft Natural Cheese"],
+    ),
+]
+
+MealTypeParam = Annotated[
+    str,
+    Field(
+        description="Filter by meal type. Case-insensitive exact match. "
+                    "Valid values: 'Breakfast', 'Lunch', 'Dinner', 'Appetizer', 'Dessert', 'Snack'. Leave empty to skip.",
+        examples=["Dinner", "Dessert"],
+    ),
+]
+
+TagParam = Annotated[
+    str,
+    Field(
+        description="Filter by a single tag. Case-insensitive substring match against each recipe's tags "
+                    "(e.g. 'Quick', 'Vegetarian', 'Heinz Big Red'). Leave empty to skip.",
+        examples=["Vegetarian", "Quick", "Bake"],
+    ),
+]
+
+MinRecipesParam = Annotated[
+    int,
+    Field(
+        description="Only return brands that have at least this many recipes. "
+                    "Use 0 for no minimum (return all brands).",
+        examples=[0, 4, 5],
+    ),
+]
+
+
+# ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
 
-@mcp.tool()
-def list_all_recipes() -> RecipeListOutput:
-    """Return a summary list of all 15 recipes with IDs and titles."""
-    ids    = ", ".join(r["id"]    for r in RECIPES)
-    titles = ", ".join(r["title"] for r in RECIPES)
+@mcp.tool(annotations=_read_only("List All Recipes"))
+def list_all_recipes(source_brand: BrandParam = "") -> RecipeListOutput:
+    """Return a summary list of recipes with IDs and titles.
+
+    Optionally narrow the list to a single brand; leave source_brand empty to
+    return all 15 recipes.
+    """
+    results = RECIPES
+    if source_brand:
+        results = [r for r in RECIPES if source_brand.lower() in r["source_brand"].lower()]
+
+    if not results:
+        return RecipeListOutput(count=0, recipe_ids="", recipe_titles="",
+                                summary=f"No recipes found for brand '{source_brand}'.")
+
+    ids    = ", ".join(r["id"]    for r in results)
+    titles = ", ".join(r["title"] for r in results)
+    scope  = f"brand '{source_brand}'" if source_brand else "Kraft Natural Cheese, Heinz AU, and KraftHeinz.com"
     return RecipeListOutput(
-        count=len(RECIPES),
+        count=len(results),
         recipe_ids=ids,
         recipe_titles=titles,
-        summary=f"{len(RECIPES)} recipes available across Kraft Natural Cheese, Heinz AU, and KraftHeinz.com.",
+        summary=f"{len(results)} recipe(s) available across {scope}.",
     )
 
 
-@mcp.tool()
-def get_recipe_by_id(recipe_id: str) -> RecipeDetailOutput:
-    """Retrieve full details of a recipe by its ID (e.g. 'knc-001', 'hau-002', 'kh-003').
-
-    Args:
-        recipe_id: The recipe ID to look up.
-    """
+@mcp.tool(annotations=_read_only("Get Recipe by ID"))
+def get_recipe_by_id(recipe_id: RecipeIdParam) -> RecipeDetailOutput:
+    """Retrieve full details of a recipe by its ID (e.g. 'knc-001', 'hau-002', 'kh-003')."""
     r = _by_id.get(recipe_id)
     if not r:
         return RecipeDetailOutput(
@@ -498,13 +610,9 @@ def get_recipe_by_id(recipe_id: str) -> RecipeDetailOutput:
     return _to_detail(r)
 
 
-@mcp.tool()
-def get_recipe_by_slug(slug: str) -> RecipeDetailOutput:
-    """Retrieve full details of a recipe by its URL slug (e.g. 'simply-lasagna').
-
-    Args:
-        slug: The recipe slug to look up.
-    """
+@mcp.tool(annotations=_read_only("Get Recipe by Slug"))
+def get_recipe_by_slug(slug: SlugParam) -> RecipeDetailOutput:
+    """Retrieve full details of a recipe by its URL slug (e.g. 'simply-lasagna')."""
     r = _by_slug.get(slug)
     if not r:
         return RecipeDetailOutput(
@@ -516,21 +624,14 @@ def get_recipe_by_slug(slug: str) -> RecipeDetailOutput:
     return _to_detail(r)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_read_only("Search Recipes"))
 def search_recipes(
-    query: Optional[str] = None,
-    source_brand: Optional[str] = None,
-    meal_type: Optional[str] = None,
-    tag: Optional[str] = None,
+    query: QueryParam = "",
+    source_brand: BrandParam = "",
+    meal_type: MealTypeParam = "",
+    tag: TagParam = "",
 ) -> RecipeListOutput:
-    """Search recipes by keyword, brand, meal type, or tag.
-
-    Args:
-        query:        Free-text search across title, description, tags and ingredients.
-        source_brand: Filter by brand — 'Kraft Natural Cheese', 'Heinz AU', or 'KraftHeinz.com'.
-        meal_type:    Filter by meal type — 'Dinner', 'Lunch', 'Appetizer', 'Breakfast', 'Dessert', or 'Snack'.
-        tag:          Filter by a single tag string (case-insensitive partial match).
-    """
+    """Search recipes by keyword, brand, meal type, or tag. Filters combine with AND."""
     results = RECIPES
 
     if source_brand:
@@ -563,13 +664,9 @@ def search_recipes(
     )
 
 
-@mcp.tool()
-def get_recipe_ingredients(recipe_id: str) -> IngredientsOutput:
-    """Return the ingredients list for a recipe by ID.
-
-    Args:
-        recipe_id: The recipe ID (e.g. 'knc-001').
-    """
+@mcp.tool(annotations=_read_only("Get Recipe Ingredients"))
+def get_recipe_ingredients(recipe_id: RecipeIdParam) -> IngredientsOutput:
+    """Return the ingredients list for a recipe by ID."""
     r = _by_id.get(recipe_id)
     if not r:
         return IngredientsOutput(matched=False, id=recipe_id, title="Not found",
@@ -582,13 +679,9 @@ def get_recipe_ingredients(recipe_id: str) -> IngredientsOutput:
     )
 
 
-@mcp.tool()
-def get_recipe_steps(recipe_id: str) -> StepsOutput:
-    """Return the cooking steps for a recipe by ID.
-
-    Args:
-        recipe_id: The recipe ID (e.g. 'knc-001').
-    """
+@mcp.tool(annotations=_read_only("Get Recipe Steps"))
+def get_recipe_steps(recipe_id: RecipeIdParam) -> StepsOutput:
+    """Return the cooking steps for a recipe by ID."""
     r = _by_id.get(recipe_id)
     if not r:
         return StepsOutput(matched=False, id=recipe_id, title="Not found",
@@ -602,13 +695,9 @@ def get_recipe_steps(recipe_id: str) -> StepsOutput:
     )
 
 
-@mcp.tool()
-def get_recipe_image(recipe_id: str) -> ImageOutput:
-    """Return the image URL and alt text for a recipe by ID.
-
-    Args:
-        recipe_id: The recipe ID (e.g. 'knc-001').
-    """
+@mcp.tool(annotations=_read_only("Get Recipe Image"))
+def get_recipe_image(recipe_id: RecipeIdParam) -> ImageOutput:
+    """Return the image URL and alt text for a recipe by ID."""
     r = _by_id.get(recipe_id)
     if not r:
         return ImageOutput(matched=False, id=recipe_id, title="Not found",
@@ -621,29 +710,54 @@ def get_recipe_image(recipe_id: str) -> ImageOutput:
     )
 
 
-@mcp.tool()
-def list_brands() -> BrandsOutput:
-    """Return the three source brands available in this recipe hub with recipe counts."""
+@mcp.tool(annotations=_read_only("List Brands"))
+def list_brands(min_recipes: MinRecipesParam = 0) -> BrandsOutput:
+    """Return the source brands available in this recipe hub with recipe counts.
+
+    Optionally pass min_recipes to return only brands with at least that many
+    recipes; use 0 (default) to return all brands.
+    """
     brands = sorted(set(r["source_brand"] for r in RECIPES))
     counts = {b: sum(1 for r in RECIPES if r["source_brand"] == b) for b in brands}
-    lines  = "\n".join(f"{b}: {counts[b]} recipe(s)" for b in brands)
+    if min_recipes > 0:
+        brands = [b for b in brands if counts[b] >= min_recipes]
+
+    if not brands:
+        return BrandsOutput(brand_count=0, brands_list="",
+                            summary=f"No brands have at least {min_recipes} recipe(s).")
+
+    lines = "\n".join(f"{b}: {counts[b]} recipe(s)" for b in brands)
     return BrandsOutput(
         brand_count=len(brands),
         brands_list=lines,
-        summary=f"{len(brands)} brands available: {', '.join(brands)}.",
+        summary=f"{len(brands)} brand(s) available: {', '.join(brands)}.",
     )
 
 
-@mcp.tool()
-def list_meal_types() -> MealTypesOutput:
-    """Return all available meal types and their recipe counts."""
-    types  = sorted(set(r["meal_type"] for r in RECIPES))
-    counts = {t: sum(1 for r in RECIPES if r["meal_type"] == t) for t in types}
-    lines  = "\n".join(f"{t}: {counts[t]} recipe(s)" for t in types)
+@mcp.tool(annotations=_read_only("List Meal Types"))
+def list_meal_types(source_brand: BrandParam = "") -> MealTypesOutput:
+    """Return the available meal types and their recipe counts.
+
+    Optionally pass source_brand to list only the meal types offered by that
+    brand; leave empty to cover all brands.
+    """
+    pool = RECIPES
+    if source_brand:
+        pool = [r for r in RECIPES if source_brand.lower() in r["source_brand"].lower()]
+
+    types  = sorted(set(r["meal_type"] for r in pool))
+    counts = {t: sum(1 for r in pool if r["meal_type"] == t) for t in types}
+
+    if not types:
+        return MealTypesOutput(type_count=0, meal_types_list="",
+                               summary=f"No meal types found for brand '{source_brand}'.")
+
+    lines = "\n".join(f"{t}: {counts[t]} recipe(s)" for t in types)
+    scope = f" for {source_brand}" if source_brand else ""
     return MealTypesOutput(
         type_count=len(types),
         meal_types_list=lines,
-        summary=f"{len(types)} meal types available: {', '.join(types)}.",
+        summary=f"{len(types)} meal type(s) available{scope}: {', '.join(types)}.",
     )
 
 

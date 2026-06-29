@@ -565,17 +565,31 @@ MinRecipesParam = Annotated[
     ),
 ]
 
+IncludeCountsParam = Annotated[
+    str,
+    Field(
+        description="Whether to include recipe counts alongside each result. "
+                    "Pass 'yes' to include counts (e.g. 'Dinner: 5 recipe(s)') or "
+                    "'no' to return names only. Default to 'yes' when unsure.",
+        examples=["yes", "no"],
+    ),
+]
+
 
 # ---------------------------------------------------------------------------
 # Tools
 # ---------------------------------------------------------------------------
 
 @mcp.tool(annotations=_read_only("List All Recipes"))
-def list_all_recipes(source_brand: BrandParam = "") -> RecipeListOutput:
+def list_all_recipes(
+    include_counts: IncludeCountsParam,
+    source_brand: BrandParam = "",
+) -> RecipeListOutput:
     """Return a summary list of recipes with IDs and titles.
 
-    Optionally narrow the list to a single brand; leave source_brand empty to
-    return all 15 recipes.
+    include_counts controls whether recipe counts are shown in the summary
+    ('yes' or 'no'). Optionally narrow the list to a single brand by passing
+    source_brand; leave empty to return all 15 recipes.
     """
     results = RECIPES
     if source_brand:
@@ -588,11 +602,12 @@ def list_all_recipes(source_brand: BrandParam = "") -> RecipeListOutput:
     ids    = ", ".join(r["id"]    for r in results)
     titles = ", ".join(r["title"] for r in results)
     scope  = f"brand '{source_brand}'" if source_brand else "Kraft Natural Cheese, Heinz AU, and KraftHeinz.com"
+    count_note = f"{len(results)} recipe(s) available across" if include_counts.lower() != "no" else "Recipes available across"
     return RecipeListOutput(
         count=len(results),
         recipe_ids=ids,
         recipe_titles=titles,
-        summary=f"{len(results)} recipe(s) available across {scope}.",
+        summary=f"{count_note} {scope}.",
     )
 
 
@@ -626,12 +641,17 @@ def get_recipe_by_slug(slug: SlugParam) -> RecipeDetailOutput:
 
 @mcp.tool(annotations=_read_only("Search Recipes"))
 def search_recipes(
+    include_counts: IncludeCountsParam,
     query: QueryParam = "",
     source_brand: BrandParam = "",
     meal_type: MealTypeParam = "",
     tag: TagParam = "",
 ) -> RecipeListOutput:
-    """Search recipes by keyword, brand, meal type, or tag. Filters combine with AND."""
+    """Search recipes by keyword, brand, meal type, or tag. Filters combine with AND.
+
+    include_counts controls whether the result count appears in the summary
+    ('yes' or 'no'). All other parameters are optional filters.
+    """
     results = RECIPES
 
     if source_brand:
@@ -656,11 +676,12 @@ def search_recipes(
 
     ids    = ", ".join(r["id"]    for r in results)
     titles = ", ".join(r["title"] for r in results)
+    count_note = f"{len(results)} recipe(s) matched" if include_counts.lower() != "no" else "Recipes matched"
     return RecipeListOutput(
         count=len(results),
         recipe_ids=ids,
         recipe_titles=titles,
-        summary=f"{len(results)} recipe(s) matched your search.",
+        summary=f"{count_note} your search.",
     )
 
 
@@ -711,11 +732,15 @@ def get_recipe_image(recipe_id: RecipeIdParam) -> ImageOutput:
 
 
 @mcp.tool(annotations=_read_only("List Brands"))
-def list_brands(min_recipes: MinRecipesParam = 0) -> BrandsOutput:
+def list_brands(
+    include_counts: IncludeCountsParam,
+    min_recipes: MinRecipesParam = 0,
+) -> BrandsOutput:
     """Return the source brands available in this recipe hub with recipe counts.
 
-    Optionally pass min_recipes to return only brands with at least that many
-    recipes; use 0 (default) to return all brands.
+    include_counts controls whether per-brand recipe counts appear in the output
+    ('yes' or 'no'). Optionally pass min_recipes to return only brands with at
+    least that many recipes; use 0 (default) to return all brands.
     """
     brands = sorted(set(r["source_brand"] for r in RECIPES))
     counts = {b: sum(1 for r in RECIPES if r["source_brand"] == b) for b in brands}
@@ -726,7 +751,10 @@ def list_brands(min_recipes: MinRecipesParam = 0) -> BrandsOutput:
         return BrandsOutput(brand_count=0, brands_list="",
                             summary=f"No brands have at least {min_recipes} recipe(s).")
 
-    lines = "\n".join(f"{b}: {counts[b]} recipe(s)" for b in brands)
+    if include_counts.lower() != "no":
+        lines = "\n".join(f"{b}: {counts[b]} recipe(s)" for b in brands)
+    else:
+        lines = "\n".join(brands)
     return BrandsOutput(
         brand_count=len(brands),
         brands_list=lines,
@@ -735,11 +763,15 @@ def list_brands(min_recipes: MinRecipesParam = 0) -> BrandsOutput:
 
 
 @mcp.tool(annotations=_read_only("List Meal Types"))
-def list_meal_types(source_brand: BrandParam = "") -> MealTypesOutput:
+def list_meal_types(
+    include_counts: IncludeCountsParam,
+    source_brand: BrandParam = "",
+) -> MealTypesOutput:
     """Return the available meal types and their recipe counts.
 
-    Optionally pass source_brand to list only the meal types offered by that
-    brand; leave empty to cover all brands.
+    include_counts controls whether per-type recipe counts appear in the output
+    ('yes' or 'no'). Optionally pass source_brand to list only the meal types
+    offered by that brand; leave empty to cover all brands.
     """
     pool = RECIPES
     if source_brand:
@@ -752,7 +784,10 @@ def list_meal_types(source_brand: BrandParam = "") -> MealTypesOutput:
         return MealTypesOutput(type_count=0, meal_types_list="",
                                summary=f"No meal types found for brand '{source_brand}'.")
 
-    lines = "\n".join(f"{t}: {counts[t]} recipe(s)" for t in types)
+    if include_counts.lower() != "no":
+        lines = "\n".join(f"{t}: {counts[t]} recipe(s)" for t in types)
+    else:
+        lines = "\n".join(types)
     scope = f" for {source_brand}" if source_brand else ""
     return MealTypesOutput(
         type_count=len(types),

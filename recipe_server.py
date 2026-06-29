@@ -1,45 +1,70 @@
 """
 Kraft Heinz Recipe MCP Server
-=============================
-FastMCP server exposing 15 recipes across three Kraft Heinz brands:
+==============================
+MCP server exposing 15 recipes across three Kraft Heinz brands:
   - Kraft Natural Cheese  (6 recipes)
   - Heinz AU              (5 recipes)
   - KraftHeinz.com        (4 recipes)
 
-Transport : HTTP + SSE  (Render-compatible)
+Transport : Streamable HTTP  (Render-compatible, matches Where to Buy server)
 Auth      : Static Bearer token via KH_RECIPE_TOKEN env var
+
+Mirrors the pattern of the Where to Buy server.py:
+  - Uses mcp.server.fastmcp.FastMCP (bundled in the mcp package)
+  - Flat Pydantic output models (Lightning-resolvable)
+  - BearerAuthMiddleware + /health route
+  - uvicorn entry point
 """
 
+import logging
 import os
-import json
 from typing import Optional
-from fastmcp import FastMCP
 
-# ── Auth token (set in Render environment variables) ──────────────────────────
-API_TOKEN = os.environ.get("KH_RECIPE_TOKEN", "kh-recipes-secret-token")
+from pydantic import BaseModel, Field
 
-# ── Recipe data ───────────────────────────────────────────────────────────────
+from mcp.server.fastmcp import FastMCP
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse, PlainTextResponse
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+HOST       = os.environ.get("MCP_HOST", "0.0.0.0")
+PORT       = int(os.environ.get("PORT", os.environ.get("MCP_PORT", "8000")))
+API_KEY    = os.environ.get("KH_RECIPE_TOKEN")   # optional; if unset, no auth
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)-5s  %(message)s")
+log = logging.getLogger("recipe-mcp")
+
+mcp = FastMCP(
+    name="kh-recipe-mcp",
+    instructions=(
+        "Kraft Heinz recipe assistant. You have access to 15 recipes across three brands: "
+        "Kraft Natural Cheese, Heinz AU, and KraftHeinz.com. "
+        "Use the available tools to search, filter and retrieve recipes, ingredients, "
+        "steps and images. If no recipe matches, say so — never invent a recipe."
+    ),
+    host=HOST,
+    port=PORT,
+    stateless_http=True,
+    json_response=True,
+)
+
+# ---------------------------------------------------------------------------
+# Recipe data
+# ---------------------------------------------------------------------------
 RECIPES = [
     # ── Kraft Natural Cheese ─────────────────────────────────────────────────
     {
-        "id": "knc-001",
-        "title": "Simply Lasagna",
-        "slug": "simply-lasagna",
-        "source_brand": "Kraft Natural Cheese",
-        "meal_type": "Dinner",
-        "prep_time": "20 min",
-        "total_time": "1 hr 20 min",
-        "servings": "8",
+        "id": "knc-001", "title": "Simply Lasagna", "slug": "simply-lasagna",
+        "source_brand": "Kraft Natural Cheese", "meal_type": "Dinner",
+        "prep_time": "20 min", "total_time": "1 hr 20 min", "servings": "8",
         "description": "A classic family lasagna made with Kraft Mozzarella and Parmesan cheeses, layered with ricotta and seasoned beef.",
         "ingredients": [
-            "1½ lb lean ground beef",
-            "1 jar (24 oz) pasta sauce",
-            "1¾ cups water",
-            "1 egg",
-            "1 container (15 oz) ricotta",
-            "2 tbsp dried parsley",
-            "2 cups Kraft Shredded Mozzarella (divided)",
-            "½ cup Kraft Grated Parmesan (divided)",
+            "1½ lb lean ground beef", "1 jar (24 oz) pasta sauce", "1¾ cups water",
+            "1 egg", "1 container (15 oz) ricotta", "2 tbsp dried parsley",
+            "2 cups Kraft Shredded Mozzarella (divided)", "½ cup Kraft Grated Parmesan (divided)",
             "12 lasagna noodles (uncooked)",
         ],
         "steps": [
@@ -54,22 +79,13 @@ RECIPES = [
         "source_url": "https://kraftnaturalcheese.com/recipe/simply-lasagna-recipe/",
     },
     {
-        "id": "knc-002",
-        "title": "Macaroni & Cheese",
-        "slug": "macaroni-cheese-knc",
-        "source_brand": "Kraft Natural Cheese",
-        "meal_type": "Dinner",
-        "prep_time": "10 min",
-        "total_time": "30 min",
-        "servings": "6",
+        "id": "knc-002", "title": "Macaroni & Cheese", "slug": "macaroni-cheese-knc",
+        "source_brand": "Kraft Natural Cheese", "meal_type": "Dinner",
+        "prep_time": "10 min", "total_time": "30 min", "servings": "6",
         "description": "Rich, creamy homemade mac & cheese using Kraft Sharp Cheddar — a crowd-pleasing weeknight classic.",
         "ingredients": [
-            "2 cups elbow macaroni",
-            "¼ cup butter",
-            "¼ cup all-purpose flour",
-            "2 cups milk",
-            "2 cups Kraft Shredded Sharp Cheddar",
-            "Salt and black pepper to taste",
+            "2 cups elbow macaroni", "¼ cup butter", "¼ cup all-purpose flour",
+            "2 cups milk", "2 cups Kraft Shredded Sharp Cheddar", "Salt and black pepper to taste",
         ],
         "steps": [
             "Cook macaroni according to package directions; drain and set aside.",
@@ -83,20 +99,13 @@ RECIPES = [
         "source_url": "https://kraftnaturalcheese.com/recipe/macaroni-cheese/",
     },
     {
-        "id": "knc-003",
-        "title": "Classic Cheeseburger",
-        "slug": "classic-cheeseburger",
-        "source_brand": "Kraft Natural Cheese",
-        "meal_type": "Dinner",
-        "prep_time": "10 min",
-        "total_time": "20 min",
-        "servings": "4",
+        "id": "knc-003", "title": "Classic Cheeseburger", "slug": "classic-cheeseburger",
+        "source_brand": "Kraft Natural Cheese", "meal_type": "Dinner",
+        "prep_time": "10 min", "total_time": "20 min", "servings": "4",
         "description": "Juicy beef patties topped with melted Kraft Cheddar slices — the perfect backyard burger in under 20 minutes.",
         "ingredients": [
-            "1½ lb 80/20 ground beef",
-            "Salt and black pepper",
-            "4 Kraft Natural Cheddar Slices",
-            "4 burger buns",
+            "1½ lb 80/20 ground beef", "Salt and black pepper",
+            "4 Kraft Natural Cheddar Slices", "4 burger buns",
             "Lettuce, tomato, onion, ketchup, mustard to serve",
         ],
         "steps": [
@@ -111,24 +120,14 @@ RECIPES = [
         "source_url": "https://kraftnaturalcheese.com/recipe/classic-cheeseburger/",
     },
     {
-        "id": "knc-004",
-        "title": "Cheesy Stuffed Breadsticks",
-        "slug": "cheesy-stuffed-breadsticks",
-        "source_brand": "Kraft Natural Cheese",
-        "meal_type": "Snack",
-        "prep_time": "15 min",
-        "total_time": "28 min",
-        "servings": "8",
+        "id": "knc-004", "title": "Cheesy Stuffed Breadsticks", "slug": "cheesy-stuffed-breadsticks",
+        "source_brand": "Kraft Natural Cheese", "meal_type": "Snack",
+        "prep_time": "15 min", "total_time": "28 min", "servings": "8",
         "description": "Golden baked breadsticks stuffed with Kraft Mozzarella string cheese, brushed with garlic-parmesan butter and served with marinara.",
         "ingredients": [
-            "1 can (11 oz) refrigerated breadstick dough",
-            "8 Kraft Mozzarella String Cheese sticks",
-            "3 tbsp butter, melted",
-            "2 tbsp Kraft Grated Parmesan",
-            "½ tsp garlic powder",
-            "1 tsp dried parsley",
-            "¾ cup marinara sauce",
-            "2 tbsp plain yogurt",
+            "1 can (11 oz) refrigerated breadstick dough", "8 Kraft Mozzarella String Cheese sticks",
+            "3 tbsp butter, melted", "2 tbsp Kraft Grated Parmesan", "½ tsp garlic powder",
+            "1 tsp dried parsley", "¾ cup marinara sauce", "2 tbsp plain yogurt",
         ],
         "steps": [
             "Heat oven to 375°F. Unroll dough and separate into 8 rectangles.",
@@ -142,22 +141,15 @@ RECIPES = [
         "source_url": "https://kraftnaturalcheese.com/recipe/cheesy-stuffed-breadsticks/",
     },
     {
-        "id": "knc-005",
-        "title": "Easy Spinach Artichoke Dip",
-        "slug": "easy-spinach-artichoke-dip",
-        "source_brand": "Kraft Natural Cheese",
-        "meal_type": "Appetizer",
-        "prep_time": "10 min",
-        "total_time": "30 min",
-        "servings": "16",
+        "id": "knc-005", "title": "Easy Spinach Artichoke Dip", "slug": "easy-spinach-artichoke-dip",
+        "source_brand": "Kraft Natural Cheese", "meal_type": "Appetizer",
+        "prep_time": "10 min", "total_time": "30 min", "servings": "16",
         "description": "Warm, gooey baked dip combining Kraft Parmesan, shredded Mozzarella, artichoke hearts and frozen spinach. Ready in 30 minutes.",
         "ingredients": [
             "1 pkg (10 oz) frozen chopped spinach, thawed and well-drained",
             "1 can (14 oz) artichoke hearts, drained and chopped",
-            "1 cup Kraft Grated Parmesan",
-            "½ cup Kraft Shredded Mozzarella",
-            "½ cup mayonnaise",
-            "½ tsp garlic powder",
+            "1 cup Kraft Grated Parmesan", "½ cup Kraft Shredded Mozzarella",
+            "½ cup mayonnaise", "½ tsp garlic powder",
         ],
         "steps": [
             "Heat oven to 350°F.",
@@ -171,22 +163,14 @@ RECIPES = [
         "source_url": "https://kraftnaturalcheese.com/recipe/easy-spinach-artichoke-dip-with-cheese/",
     },
     {
-        "id": "knc-006",
-        "title": "Hot Parmesan-Artichoke Dip",
-        "slug": "hot-parmesan-artichoke-dip",
-        "source_brand": "Kraft Natural Cheese",
-        "meal_type": "Appetizer",
-        "prep_time": "10 min",
-        "total_time": "35 min",
-        "servings": "24",
+        "id": "knc-006", "title": "Hot Parmesan-Artichoke Dip", "slug": "hot-parmesan-artichoke-dip",
+        "source_brand": "Kraft Natural Cheese", "meal_type": "Appetizer",
+        "prep_time": "10 min", "total_time": "35 min", "servings": "24",
         "description": "A cheesy, crowd-pleasing baked dip with Kraft Parmesan, cream cheese, mayo and artichoke hearts. Make-ahead friendly.",
         "ingredients": [
-            "1 pkg (8 oz) cream cheese, softened",
-            "1 can (14 oz) artichoke hearts, drained and chopped",
-            "¾ cup Kraft Grated Parmesan",
-            "½ cup mayonnaise",
-            "2 green onions, thinly sliced",
-            "2 plum tomatoes, chopped",
+            "1 pkg (8 oz) cream cheese, softened", "1 can (14 oz) artichoke hearts, drained and chopped",
+            "¾ cup Kraft Grated Parmesan", "½ cup mayonnaise",
+            "2 green onions, thinly sliced", "2 plum tomatoes, chopped",
         ],
         "steps": [
             "Heat oven to 350°F. Mix cream cheese, artichokes, Parmesan and mayo in bowl until combined.",
@@ -199,30 +183,18 @@ RECIPES = [
         "image_alt": "Hot parmesan artichoke dip garnished with tomatoes and green onions",
         "source_url": "https://kraftnaturalcheese.com/recipe/hot-parmesan-artichoke-dip/",
     },
-
     # ── Heinz AU ─────────────────────────────────────────────────────────────
     {
-        "id": "hau-001",
-        "title": "Baked Coconut Fish Curry",
-        "slug": "baked-coconut-fish-curry",
-        "source_brand": "Heinz AU",
-        "meal_type": "Dinner",
-        "prep_time": "20 min",
-        "total_time": "1 hr 5 min",
-        "servings": "4-6",
+        "id": "hau-001", "title": "Baked Coconut Fish Curry", "slug": "baked-coconut-fish-curry",
+        "source_brand": "Heinz AU", "meal_type": "Dinner",
+        "prep_time": "20 min", "total_time": "1 hr 5 min", "servings": "4-6",
         "description": "A fragrant southern-Indian inspired curry with firm white fish baked in Heinz Big Red tomato soup and coconut milk, finished with a crispy tadka.",
         "ingredients": [
-            "700–800g firm white fish, cut into 8cm pieces",
-            "¼ cup tikka curry paste",
-            "2 tbsp coconut or vegetable oil",
-            "1 tbsp minced ginger",
-            "1 can (420g) Heinz Big Red Condensed Tomato Soup",
-            "400ml coconut milk",
-            "1 tsp salt flakes",
-            "2 sprigs fresh curry leaves",
-            "1 tsp cumin seeds",
-            "¼ cup coconut flakes",
-            "Steamed rice and green beans to serve",
+            "700–800g firm white fish, cut into 8cm pieces", "¼ cup tikka curry paste",
+            "2 tbsp coconut or vegetable oil", "1 tbsp minced ginger",
+            "1 can (420g) Heinz Big Red Condensed Tomato Soup", "400ml coconut milk",
+            "1 tsp salt flakes", "2 sprigs fresh curry leaves", "1 tsp cumin seeds",
+            "¼ cup coconut flakes", "Steamed rice and green beans to serve",
         ],
         "steps": [
             "Preheat oven to 200°C/180°C fan-forced. Marinate fish in 2 tbsp curry paste; set aside.",
@@ -236,30 +208,18 @@ RECIPES = [
         "source_url": "https://www.heinz.com/en-AU/recipes/baked-coconut-fish-curry",
     },
     {
-        "id": "hau-002",
-        "title": "Chicken and Bean Burritos",
-        "slug": "chicken-and-bean-burritos",
-        "source_brand": "Heinz AU",
-        "meal_type": "Lunch",
-        "prep_time": "15 min",
-        "total_time": "35 min",
-        "servings": "8",
+        "id": "hau-002", "title": "Chicken and Bean Burritos", "slug": "chicken-and-bean-burritos",
+        "source_brand": "Heinz AU", "meal_type": "Lunch",
+        "prep_time": "15 min", "total_time": "35 min", "servings": "8",
         "description": "Quick, family-friendly baked burritos packed with chicken thigh, Heinz Baked Beans, canned tomatoes and sweet chilli sauce.",
         "ingredients": [
-            "1 tbsp oil",
-            "1 onion, chopped",
-            "1 garlic clove, finely chopped",
+            "1 tbsp oil", "1 onion, chopped", "1 garlic clove, finely chopped",
             "400g chicken thigh fillets, cut into strips",
-            "2 × 300g cans Heinz Baked Beans in Tomato Sauce",
-            "400g can chopped tomatoes",
-            "2 tbsp sweet chilli sauce",
-            "Salt and freshly ground pepper",
-            "8 flour tortillas, warmed",
-            "1 cup grated tasty cheese",
-            "2 cups shredded iceberg lettuce",
-            "1 cup chopped tomato",
-            "8 tsp light sour cream",
-            "Guacamole (optional)",
+            "2 × 300g cans Heinz Baked Beans in Tomato Sauce", "400g can chopped tomatoes",
+            "2 tbsp sweet chilli sauce", "Salt and freshly ground pepper",
+            "8 flour tortillas, warmed", "1 cup grated tasty cheese",
+            "2 cups shredded iceberg lettuce", "1 cup chopped tomato",
+            "8 tsp light sour cream", "Guacamole (optional)",
         ],
         "steps": [
             "Heat oil; sauté onion and garlic 2 min. Add chicken; cook 2–3 min until browned.",
@@ -273,24 +233,15 @@ RECIPES = [
         "source_url": "https://www.heinz.com/en-AU/recipes/chicken-and-bean-burritos",
     },
     {
-        "id": "hau-003",
-        "title": "Chilli Bean Tacos",
-        "slug": "chilli-bean-tacos",
-        "source_brand": "Heinz AU",
-        "meal_type": "Dinner",
-        "prep_time": "15 min",
-        "total_time": "25 min",
-        "servings": "6",
+        "id": "hau-003", "title": "Chilli Bean Tacos", "slug": "chilli-bean-tacos",
+        "source_brand": "Heinz AU", "meal_type": "Dinner",
+        "prep_time": "15 min", "total_time": "25 min", "servings": "6",
         "description": "Easy beef and Heinz Beanz Creationz tacos with fresh cucumber, tomato and grated cheese — great for a make-your-own family dinner.",
         "ingredients": [
-            "1 tsp olive oil",
-            "400g lean beef mince",
+            "1 tsp olive oil", "400g lean beef mince",
             "1 can (420g) Heinz Beanz Creationz Medium Salsa Chilli Beanz",
-            "3 cups shredded lettuce",
-            "1 medium cucumber, chopped",
-            "2 medium tomatoes, finely chopped",
-            "1 cup grated tasty cheese",
-            "Taco shells",
+            "3 cups shredded lettuce", "1 medium cucumber, chopped",
+            "2 medium tomatoes, finely chopped", "1 cup grated tasty cheese", "Taco shells",
         ],
         "steps": [
             "Heat oil in large non-stick pan; cook mince 5 min until well browned.",
@@ -304,26 +255,16 @@ RECIPES = [
         "source_url": "https://www.heinz.com/en-AU/recipes/chilli-bean-tacos",
     },
     {
-        "id": "hau-004",
-        "title": "Broccoli, Ricotta & Tomato Frittata",
-        "slug": "broccoli-ricotta-tomato-frittata",
-        "source_brand": "Heinz AU",
-        "meal_type": "Breakfast",
-        "prep_time": "15 min",
-        "total_time": "1 hr",
-        "servings": "6",
+        "id": "hau-004", "title": "Broccoli, Ricotta & Tomato Frittata", "slug": "broccoli-ricotta-tomato-frittata",
+        "source_brand": "Heinz AU", "meal_type": "Breakfast",
+        "prep_time": "15 min", "total_time": "1 hr", "servings": "6",
         "description": "A one-pan oven-baked frittata with roasted broccoli, ricotta, Heinz Big Red Condensed Tomato Soup and Parmesan. Make-ahead and meal-prep friendly.",
         "ingredients": [
-            "1 tbsp extra virgin olive oil",
-            "3 cups (250g) broccoli florets and stem, chopped",
-            "1 garlic clove, crushed",
-            "½ tsp chilli flakes (optional)",
-            "Salt flakes and cracked pepper",
-            "6 large free-range eggs",
-            "3 spring onions, chopped",
-            "½ can (210g) Heinz Big Red Condensed Tomato Soup",
-            "200g fresh ricotta",
-            "⅔ cup (100g) plain flour",
+            "1 tbsp extra virgin olive oil", "3 cups (250g) broccoli florets and stem, chopped",
+            "1 garlic clove, crushed", "½ tsp chilli flakes (optional)",
+            "Salt flakes and cracked pepper", "6 large free-range eggs",
+            "3 spring onions, chopped", "½ can (210g) Heinz Big Red Condensed Tomato Soup",
+            "200g fresh ricotta", "⅔ cup (100g) plain flour",
             "40g grated Parmesan, plus extra to serve",
             "Fresh basil, mint and rocket leaves to serve",
         ],
@@ -339,27 +280,16 @@ RECIPES = [
         "source_url": "https://www.heinz.com/en-AU/recipes/broccoli-ricotta-tomato-frittata",
     },
     {
-        "id": "hau-005",
-        "title": "Cheesy Beef, Tomato & Bacon Pie",
-        "slug": "cheesy-beef-tomato-bacon-pie",
-        "source_brand": "Heinz AU",
-        "meal_type": "Dinner",
-        "prep_time": "20 min",
-        "total_time": "55 min",
-        "servings": "4",
+        "id": "hau-005", "title": "Cheesy Beef, Tomato & Bacon Pie", "slug": "cheesy-beef-tomato-bacon-pie",
+        "source_brand": "Heinz AU", "meal_type": "Dinner",
+        "prep_time": "20 min", "total_time": "55 min", "servings": "4",
         "description": "A rich, golden puff-pastry pie filled with beef mince, crispy bacon, grated cheddar and Heinz Big Red tomato soup. Freezer-friendly.",
         "ingredients": [
-            "2 rashers bacon, diced",
-            "1 tbsp olive oil",
-            "500g beef mince",
-            "1 brown onion, grated",
-            "1 medium carrot, grated",
-            "2 garlic cloves, crushed",
+            "2 rashers bacon, diced", "1 tbsp olive oil", "500g beef mince",
+            "1 brown onion, grated", "1 medium carrot, grated", "2 garlic cloves, crushed",
             "1 can (420g) Heinz Big Red Condensed Tomato Soup",
-            "Salt flakes and cracked pepper",
-            "1 sheet frozen puff pastry, partially thawed",
-            "⅔ cup grated cheddar cheese",
-            "1 egg, lightly beaten",
+            "Salt flakes and cracked pepper", "1 sheet frozen puff pastry, partially thawed",
+            "⅔ cup grated cheddar cheese", "1 egg, lightly beaten",
         ],
         "steps": [
             "Preheat oven to 200°C/180°C fan-forced. Cook bacon in frying pan on high until crisp; transfer to bowl. Brown mince in batches; transfer to bowl.",
@@ -372,23 +302,15 @@ RECIPES = [
         "image_alt": "Golden puff pastry beef and bacon pie with a flaky golden crust",
         "source_url": "https://www.heinz.com/en-AU/recipes/cheesy-beef-tomato-bacon-pie",
     },
-
     # ── KraftHeinz.com ───────────────────────────────────────────────────────
     {
-        "id": "kh-001",
-        "title": "Philadelphia 3-Step Cheesecake",
-        "slug": "philadelphia-3-step-cheesecake",
-        "source_brand": "KraftHeinz.com",
-        "meal_type": "Dessert",
-        "prep_time": "10 min",
-        "total_time": "1 hr 20 min",
-        "servings": "8",
+        "id": "kh-001", "title": "Philadelphia 3-Step Cheesecake", "slug": "philadelphia-3-step-cheesecake",
+        "source_brand": "KraftHeinz.com", "meal_type": "Dessert",
+        "prep_time": "10 min", "total_time": "1 hr 20 min", "servings": "8",
         "description": "A creamy, indulgent baked cheesecake made with Philadelphia Brick Cream Cheese in just three simple steps.",
         "ingredients": [
             "2 pkgs (250g each) Philadelphia Brick Cream Cheese, softened",
-            "½ cup sugar",
-            "½ tsp vanilla",
-            "2 eggs",
+            "½ cup sugar", "½ tsp vanilla", "2 eggs",
             "1 ready-to-use graham cracker crumb crust (9-inch)",
         ],
         "steps": [
@@ -403,21 +325,14 @@ RECIPES = [
         "source_url": "https://www.kraftheinz.com/philadelphia/recipes/503503-philadelphia-3-step-cheesecake",
     },
     {
-        "id": "kh-002",
-        "title": "STOVE TOP One-Dish Chicken Bake",
-        "slug": "stove-top-one-dish-chicken-bake",
-        "source_brand": "KraftHeinz.com",
-        "meal_type": "Dinner",
-        "prep_time": "10 min",
-        "total_time": "40 min",
-        "servings": "6",
+        "id": "kh-002", "title": "STOVE TOP One-Dish Chicken Bake", "slug": "stove-top-one-dish-chicken-bake",
+        "source_brand": "KraftHeinz.com", "meal_type": "Dinner",
+        "prep_time": "10 min", "total_time": "40 min", "servings": "6",
         "description": "A weeknight one-pan wonder: juicy chicken pieces baked under savory Stove Top Stuffing with a creamy mushroom soup sauce. Ready in 40 minutes.",
         "ingredients": [
-            "1⅔ cups hot water",
-            "1 pkg (6 oz) Stove Top Stuffing Mix for Chicken",
+            "1⅔ cups hot water", "1 pkg (6 oz) Stove Top Stuffing Mix for Chicken",
             "1½ lb boneless skinless chicken breasts, cut into bite-size pieces",
-            "1 can (10¾ oz) condensed cream of mushroom soup",
-            "⅓ cup sour cream",
+            "1 can (10¾ oz) condensed cream of mushroom soup", "⅓ cup sour cream",
         ],
         "steps": [
             "Heat oven to 400°F.",
@@ -431,18 +346,12 @@ RECIPES = [
         "source_url": "https://www.kraftheinz.com/stove-top/recipes/501776-stove-top-one-dish-chicken-bake",
     },
     {
-        "id": "kh-003",
-        "title": "America's Favorite Grilled Cheese",
-        "slug": "americas-favorite-grilled-cheese",
-        "source_brand": "KraftHeinz.com",
-        "meal_type": "Lunch",
-        "prep_time": "5 min",
-        "total_time": "10 min",
-        "servings": "1",
+        "id": "kh-003", "title": "America's Favorite Grilled Cheese", "slug": "americas-favorite-grilled-cheese",
+        "source_brand": "KraftHeinz.com", "meal_type": "Lunch",
+        "prep_time": "5 min", "total_time": "10 min", "servings": "1",
         "description": "The ultimate classic: crispy buttery bread with two perfectly melted Kraft Singles American slices. Done in 10 minutes, loved by everyone.",
         "ingredients": [
-            "2 slices white bread",
-            "2 Kraft Singles American Slices",
+            "2 slices white bread", "2 Kraft Singles American Slices",
             "2 tsp butter or margarine, softened",
         ],
         "steps": [
@@ -456,23 +365,15 @@ RECIPES = [
         "source_url": "https://www.kraftheinz.com/kraft-singles/recipes/505975-america-s-favorite-grilled-cheese-sandwich-recipe",
     },
     {
-        "id": "kh-004",
-        "title": "Fantasy Fudge",
-        "slug": "fantasy-fudge",
-        "source_brand": "KraftHeinz.com",
-        "meal_type": "Dessert",
-        "prep_time": "10 min",
-        "total_time": "25 min",
-        "servings": "24",
+        "id": "kh-004", "title": "Fantasy Fudge", "slug": "fantasy-fudge",
+        "source_brand": "KraftHeinz.com", "meal_type": "Dessert",
+        "prep_time": "10 min", "total_time": "25 min", "servings": "24",
         "description": "A melt-in-your-mouth classic fudge made with Baker's Chocolate, Kraft Jet-Puffed Marshmallow Creme and walnuts — the ultimate holiday treat.",
         "ingredients": [
-            "3 cups sugar",
-            "¾ cup (1½ sticks) butter",
-            "⅔ cup evaporated milk",
+            "3 cups sugar", "¾ cup (1½ sticks) butter", "⅔ cup evaporated milk",
             "1 pkg (12 oz) Baker's Semi-Sweet Chocolate Chips",
             "1 jar (7 oz) Kraft Jet-Puffed Marshmallow Creme",
-            "1 cup chopped walnuts",
-            "1 tsp vanilla extract",
+            "1 cup chopped walnuts", "1 tsp vanilla extract",
         ],
         "steps": [
             "Bring sugar, butter and evaporated milk to a full rolling boil in large heavy saucepan over medium heat, stirring constantly.",
@@ -487,66 +388,132 @@ RECIPES = [
     },
 ]
 
-# ── Index helpers ─────────────────────────────────────────────────────────────
-_by_id   = {r["id"]: r for r in RECIPES}
+# ---------------------------------------------------------------------------
+# Index helpers
+# ---------------------------------------------------------------------------
+_by_id   = {r["id"]: r   for r in RECIPES}
 _by_slug = {r["slug"]: r for r in RECIPES}
 
-# ── MCP server ────────────────────────────────────────────────────────────────
-mcp = FastMCP(
-    name="Kraft Heinz Recipe Hub",
-    instructions=(
-        "You are a Kraft Heinz recipe assistant. You have access to 15 recipes "
-        "across three brands: Kraft Natural Cheese, Heinz AU, and KraftHeinz.com. "
-        "Use the available tools to search, filter and retrieve recipes, ingredients, "
-        "steps and images."
-    ),
-)
+# ---------------------------------------------------------------------------
+# Output models — flat, primitive-only (Lightning-resolvable)
+# ---------------------------------------------------------------------------
+
+class RecipeListOutput(BaseModel):
+    count: int = Field(description="Total number of recipes returned.")
+    recipe_ids: str = Field(description="Comma-separated list of recipe IDs.")
+    recipe_titles: str = Field(description="Comma-separated list of recipe titles.")
+    summary: str = Field(description="Human-readable summary of the recipes found.")
 
 
-# ── Tools ─────────────────────────────────────────────────────────────────────
+class RecipeDetailOutput(BaseModel):
+    matched: bool = Field(description="True if a recipe was found.")
+    id: str = Field(description="Recipe ID, e.g. knc-001.")
+    title: str = Field(description="Recipe title.")
+    source_brand: str = Field(description="Brand the recipe belongs to.")
+    meal_type: str = Field(description="Meal type: Breakfast, Lunch, Dinner, Appetizer, Dessert, or Snack.")
+    prep_time: str = Field(description="Preparation time.")
+    total_time: str = Field(description="Total time including cooking.")
+    servings: str = Field(description="Number of servings.")
+    description: str = Field(description="Short marketing description of the recipe.")
+    ingredients_list: str = Field(description="Newline-separated list of all ingredients.")
+    steps_list: str = Field(description="Numbered, newline-separated cooking steps.")
+    tags: str = Field(description="Comma-separated tags.")
+    image_url: str = Field(description="URL to the recipe hero image.")
+    image_alt: str = Field(description="Alt text for the recipe image.")
+    source_url: str = Field(description="Original recipe URL on the brand site.")
+    summary: str = Field(description="One-line natural-language summary, or error message if not found.")
+
+
+class IngredientsOutput(BaseModel):
+    matched: bool = Field(description="True if the recipe was found.")
+    id: str = Field(description="Recipe ID.")
+    title: str = Field(description="Recipe title.")
+    servings: str = Field(description="Number of servings this ingredient list covers.")
+    ingredients_list: str = Field(description="Newline-separated list of ingredients.")
+    summary: str = Field(description="One-line summary or error message.")
+
+
+class StepsOutput(BaseModel):
+    matched: bool = Field(description="True if the recipe was found.")
+    id: str = Field(description="Recipe ID.")
+    title: str = Field(description="Recipe title.")
+    step_count: int = Field(description="Total number of steps.")
+    steps_list: str = Field(description="Numbered, newline-separated cooking steps.")
+    summary: str = Field(description="One-line summary or error message.")
+
+
+class ImageOutput(BaseModel):
+    matched: bool = Field(description="True if the recipe was found.")
+    id: str = Field(description="Recipe ID.")
+    title: str = Field(description="Recipe title.")
+    image_url: str = Field(description="URL to the recipe hero image.")
+    image_alt: str = Field(description="Alt text for the recipe image.")
+    summary: str = Field(description="One-line summary or error message.")
+
+
+class BrandsOutput(BaseModel):
+    brand_count: int = Field(description="Total number of brands.")
+    brands_list: str = Field(description="Newline-separated list of brands with recipe counts.")
+    summary: str = Field(description="One-line summary of available brands.")
+
+
+class MealTypesOutput(BaseModel):
+    type_count: int = Field(description="Total number of meal types.")
+    meal_types_list: str = Field(description="Newline-separated list of meal types with recipe counts.")
+    summary: str = Field(description="One-line summary of available meal types.")
+
+
+# ---------------------------------------------------------------------------
+# Tools
+# ---------------------------------------------------------------------------
 
 @mcp.tool()
-def list_all_recipes() -> str:
-    """Return a summary list of all 15 recipes with id, title, brand, meal type and image URL."""
-    summary = [
-        {
-            "id":           r["id"],
-            "title":        r["title"],
-            "source_brand": r["source_brand"],
-            "meal_type":    r["meal_type"],
-            "total_time":   r["total_time"],
-            "servings":     r["servings"],
-            "image_url":    r["image_url"],
-            "image_alt":    r["image_alt"],
-            "slug":         r["slug"],
-        }
-        for r in RECIPES
-    ]
-    return json.dumps(summary, ensure_ascii=False, indent=2)
+def list_all_recipes() -> RecipeListOutput:
+    """Return a summary list of all 15 recipes with IDs and titles."""
+    ids    = ", ".join(r["id"]    for r in RECIPES)
+    titles = ", ".join(r["title"] for r in RECIPES)
+    return RecipeListOutput(
+        count=len(RECIPES),
+        recipe_ids=ids,
+        recipe_titles=titles,
+        summary=f"{len(RECIPES)} recipes available across Kraft Natural Cheese, Heinz AU, and KraftHeinz.com.",
+    )
 
 
 @mcp.tool()
-def get_recipe_by_id(recipe_id: str) -> str:
+def get_recipe_by_id(recipe_id: str) -> RecipeDetailOutput:
+    """Retrieve full details of a recipe by its ID (e.g. 'knc-001', 'hau-002', 'kh-003').
+
+    Args:
+        recipe_id: The recipe ID to look up.
     """
-    Retrieve the full details of a recipe by its ID (e.g. 'knc-001', 'hau-002', 'kh-003').
-    Returns all fields including ingredients, steps, image URL and source URL.
-    """
-    recipe = _by_id.get(recipe_id)
-    if not recipe:
-        return json.dumps({"error": f"No recipe found with id '{recipe_id}'"})
-    return json.dumps(recipe, ensure_ascii=False, indent=2)
+    r = _by_id.get(recipe_id)
+    if not r:
+        return RecipeDetailOutput(
+            matched=False, id=recipe_id, title="Not found", source_brand="", meal_type="",
+            prep_time="", total_time="", servings="", description="",
+            ingredients_list="", steps_list="", tags="", image_url="", image_alt="",
+            source_url="", summary=f"No recipe found with ID '{recipe_id}'.",
+        )
+    return _to_detail(r)
 
 
 @mcp.tool()
-def get_recipe_by_slug(slug: str) -> str:
+def get_recipe_by_slug(slug: str) -> RecipeDetailOutput:
+    """Retrieve full details of a recipe by its URL slug (e.g. 'simply-lasagna').
+
+    Args:
+        slug: The recipe slug to look up.
     """
-    Retrieve the full details of a recipe by its URL slug (e.g. 'simply-lasagna').
-    Returns all fields including ingredients, steps, image URL and source URL.
-    """
-    recipe = _by_slug.get(slug)
-    if not recipe:
-        return json.dumps({"error": f"No recipe found with slug '{slug}'"})
-    return json.dumps(recipe, ensure_ascii=False, indent=2)
+    r = _by_slug.get(slug)
+    if not r:
+        return RecipeDetailOutput(
+            matched=False, id="", title="Not found", source_brand="", meal_type="",
+            prep_time="", total_time="", servings="", description="",
+            ingredients_list="", steps_list="", tags="", image_url="", image_alt="",
+            source_url="", summary=f"No recipe found with slug '{slug}'.",
+        )
+    return _to_detail(r)
 
 
 @mcp.tool()
@@ -555,33 +522,23 @@ def search_recipes(
     source_brand: Optional[str] = None,
     meal_type: Optional[str] = None,
     tag: Optional[str] = None,
-) -> str:
-    """
-    Search recipes by keyword, brand, meal type or tag.
+) -> RecipeListOutput:
+    """Search recipes by keyword, brand, meal type, or tag.
 
     Args:
-        query:        Free-text search across title, description and tags.
+        query:        Free-text search across title, description, tags and ingredients.
         source_brand: Filter by brand — 'Kraft Natural Cheese', 'Heinz AU', or 'KraftHeinz.com'.
-        meal_type:    Filter by meal type — 'Dinner', 'Lunch', 'Appetizer', 'Breakfast',
-                      'Dessert', or 'Snack'.
+        meal_type:    Filter by meal type — 'Dinner', 'Lunch', 'Appetizer', 'Breakfast', 'Dessert', or 'Snack'.
         tag:          Filter by a single tag string (case-insensitive partial match).
-
-    Returns a list of matching recipes with title, brand, meal type and image URL.
     """
     results = RECIPES
 
     if source_brand:
         results = [r for r in results if source_brand.lower() in r["source_brand"].lower()]
-
     if meal_type:
         results = [r for r in results if r["meal_type"].lower() == meal_type.lower()]
-
     if tag:
-        results = [
-            r for r in results
-            if any(tag.lower() in t.lower() for t in r["tags"])
-        ]
-
+        results = [r for r in results if any(tag.lower() in t.lower() for t in r["tags"])]
     if query:
         q = query.lower()
         results = [
@@ -593,93 +550,154 @@ def search_recipes(
         ]
 
     if not results:
-        return json.dumps({"message": "No recipes matched your search.", "count": 0})
+        return RecipeListOutput(count=0, recipe_ids="", recipe_titles="",
+                                summary="No recipes matched your search.")
 
-    summary = [
-        {
-            "id":           r["id"],
-            "title":        r["title"],
-            "source_brand": r["source_brand"],
-            "meal_type":    r["meal_type"],
-            "total_time":   r["total_time"],
-            "image_url":    r["image_url"],
-            "image_alt":    r["image_alt"],
-            "slug":         r["slug"],
-        }
-        for r in results
-    ]
-    return json.dumps({"count": len(summary), "recipes": summary}, ensure_ascii=False, indent=2)
+    ids    = ", ".join(r["id"]    for r in results)
+    titles = ", ".join(r["title"] for r in results)
+    return RecipeListOutput(
+        count=len(results),
+        recipe_ids=ids,
+        recipe_titles=titles,
+        summary=f"{len(results)} recipe(s) matched your search.",
+    )
 
 
 @mcp.tool()
-def get_recipe_ingredients(recipe_id: str) -> str:
+def get_recipe_ingredients(recipe_id: str) -> IngredientsOutput:
+    """Return the ingredients list for a recipe by ID.
+
+    Args:
+        recipe_id: The recipe ID (e.g. 'knc-001').
     """
-    Return just the ingredients list for a recipe by ID.
-    Useful when a customer asks 'what do I need to make X?'
-    """
-    recipe = _by_id.get(recipe_id)
-    if not recipe:
-        return json.dumps({"error": f"No recipe found with id '{recipe_id}'"})
-    return json.dumps({
-        "recipe_id":   recipe["id"],
-        "title":       recipe["title"],
-        "servings":    recipe["servings"],
-        "ingredients": recipe["ingredients"],
-    }, ensure_ascii=False, indent=2)
+    r = _by_id.get(recipe_id)
+    if not r:
+        return IngredientsOutput(matched=False, id=recipe_id, title="Not found",
+                                 servings="", ingredients_list="",
+                                 summary=f"No recipe found with ID '{recipe_id}'.")
+    return IngredientsOutput(
+        matched=True, id=r["id"], title=r["title"], servings=r["servings"],
+        ingredients_list="\n".join(r["ingredients"]),
+        summary=f"{r['title']} requires {len(r['ingredients'])} ingredients and serves {r['servings']}.",
+    )
 
 
 @mcp.tool()
-def get_recipe_steps(recipe_id: str) -> str:
+def get_recipe_steps(recipe_id: str) -> StepsOutput:
+    """Return the cooking steps for a recipe by ID.
+
+    Args:
+        recipe_id: The recipe ID (e.g. 'knc-001').
     """
-    Return just the cooking steps for a recipe by ID.
-    Useful when a customer is mid-cook and asks 'what's step 3?'
-    """
-    recipe = _by_id.get(recipe_id)
-    if not recipe:
-        return json.dumps({"error": f"No recipe found with id '{recipe_id}'"})
-    return json.dumps({
-        "recipe_id": recipe["id"],
-        "title":     recipe["title"],
-        "steps":     recipe["steps"],
-    }, ensure_ascii=False, indent=2)
+    r = _by_id.get(recipe_id)
+    if not r:
+        return StepsOutput(matched=False, id=recipe_id, title="Not found",
+                           step_count=0, steps_list="",
+                           summary=f"No recipe found with ID '{recipe_id}'.")
+    numbered = "\n".join(f"{i+1}. {s}" for i, s in enumerate(r["steps"]))
+    return StepsOutput(
+        matched=True, id=r["id"], title=r["title"],
+        step_count=len(r["steps"]), steps_list=numbered,
+        summary=f"{r['title']} has {len(r['steps'])} cooking steps.",
+    )
 
 
 @mcp.tool()
-def get_recipe_image(recipe_id: str) -> str:
+def get_recipe_image(recipe_id: str) -> ImageOutput:
+    """Return the image URL and alt text for a recipe by ID.
+
+    Args:
+        recipe_id: The recipe ID (e.g. 'knc-001').
     """
-    Return the image URL and alt text for a recipe by ID.
-    Use this to display or share a recipe image.
-    """
-    recipe = _by_id.get(recipe_id)
-    if not recipe:
-        return json.dumps({"error": f"No recipe found with id '{recipe_id}'"})
-    return json.dumps({
-        "recipe_id": recipe["id"],
-        "title":     recipe["title"],
-        "image_url": recipe["image_url"],
-        "image_alt": recipe["image_alt"],
-    }, ensure_ascii=False, indent=2)
+    r = _by_id.get(recipe_id)
+    if not r:
+        return ImageOutput(matched=False, id=recipe_id, title="Not found",
+                           image_url="", image_alt="",
+                           summary=f"No recipe found with ID '{recipe_id}'.")
+    return ImageOutput(
+        matched=True, id=r["id"], title=r["title"],
+        image_url=r["image_url"], image_alt=r["image_alt"],
+        summary=f"Image available for {r['title']}.",
+    )
 
 
 @mcp.tool()
-def list_brands() -> str:
-    """Return the three source brands available in this recipe hub."""
+def list_brands() -> BrandsOutput:
+    """Return the three source brands available in this recipe hub with recipe counts."""
     brands = sorted(set(r["source_brand"] for r in RECIPES))
     counts = {b: sum(1 for r in RECIPES if r["source_brand"] == b) for b in brands}
-    return json.dumps({"brands": [{"name": b, "recipe_count": counts[b]} for b in brands]},
-                      ensure_ascii=False, indent=2)
+    lines  = "\n".join(f"{b}: {counts[b]} recipe(s)" for b in brands)
+    return BrandsOutput(
+        brand_count=len(brands),
+        brands_list=lines,
+        summary=f"{len(brands)} brands available: {', '.join(brands)}.",
+    )
 
 
 @mcp.tool()
-def list_meal_types() -> str:
+def list_meal_types() -> MealTypesOutput:
     """Return all available meal types and their recipe counts."""
-    types = sorted(set(r["meal_type"] for r in RECIPES))
+    types  = sorted(set(r["meal_type"] for r in RECIPES))
     counts = {t: sum(1 for r in RECIPES if r["meal_type"] == t) for t in types}
-    return json.dumps({"meal_types": [{"name": t, "recipe_count": counts[t]} for t in types]},
-                      ensure_ascii=False, indent=2)
+    lines  = "\n".join(f"{t}: {counts[t]} recipe(s)" for t in types)
+    return MealTypesOutput(
+        type_count=len(types),
+        meal_types_list=lines,
+        summary=f"{len(types)} meal types available: {', '.join(types)}.",
+    )
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Helper: build RecipeDetailOutput from a recipe dict
+# ---------------------------------------------------------------------------
+def _to_detail(r: dict) -> RecipeDetailOutput:
+    numbered_steps = "\n".join(f"{i+1}. {s}" for i, s in enumerate(r["steps"]))
+    return RecipeDetailOutput(
+        matched=True,
+        id=r["id"], title=r["title"], source_brand=r["source_brand"],
+        meal_type=r["meal_type"], prep_time=r["prep_time"],
+        total_time=r["total_time"], servings=r["servings"],
+        description=r["description"],
+        ingredients_list="\n".join(r["ingredients"]),
+        steps_list=numbered_steps,
+        tags=", ".join(r["tags"]),
+        image_url=r["image_url"], image_alt=r["image_alt"],
+        source_url=r["source_url"],
+        summary=f"{r['title']} ({r['source_brand']}) — {r['meal_type']}, serves {r['servings']}, total time {r['total_time']}.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Optional bearer auth + /health  (mirrors Where to Buy server pattern)
+# ---------------------------------------------------------------------------
+class BearerAuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path == "/health":
+            return await call_next(request)
+        if API_KEY:
+            if request.headers.get("authorization", "") != f"Bearer {API_KEY}":
+                log.warning("401 rejected request to %s", request.url.path)
+                return JSONResponse({"error": "unauthorized"}, status_code=401)
+        return await call_next(request)
+
+
+async def health(_request):
+    return PlainTextResponse("ok")
+
+
+app = mcp.streamable_http_app()
+app.add_middleware(BearerAuthMiddleware)
+app.add_route("/health", health, methods=["GET"])
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    mcp.run(transport="sse", host="0.0.0.0", port=port)
+    import uvicorn
+    log.info("KH Recipe MCP server starting")
+    log.info("  Recipes      : %d", len(RECIPES))
+    log.info("  MCP endpoint : http://%s:%s/mcp", HOST, PORT)
+    log.info("  Health check : http://%s:%s/health", HOST, PORT)
+    log.info("  Auth         : %s", "Bearer token required" if API_KEY else "none (open)")
+    uvicorn.run(app, host=HOST, port=PORT, log_level="info")
